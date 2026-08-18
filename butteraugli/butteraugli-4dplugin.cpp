@@ -182,5 +182,5 @@ static void do_butteraugli(PA_PluginParameters params) {
     // Return as 4D Picture
     PA_Picture result = PA_CreatePicture((void *)png_data.data(), (PA_long32)png_data.size());
     PA_ReturnPicture(params, result);
-    PA_DisposePicture(result);
+//    PA_DisposePicture(result);
 }

@@ -1,3 +1,5 @@
 deps/4D-Plugin-SDK/4D Plugin Wizard/*
 butteraugli/cmake-build/*
 deps/4D-Plugin-SDK/docs/*
+butteraugli/butteraugli-test/userPreferences.*
+butteraugli/butteraugli-test/Project/DerivedData/*
