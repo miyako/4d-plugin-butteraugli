@@ -1,0 +1,92 @@
+name: Build and Test
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+            tool4d_archive: tool4d_arm64.tar.xz
+          - os: windows-latest
+            platform: win
+            tool4d_archive: tool4d_win.tar.xz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Parse 4D version from .4DProject
+        id: version
+        shell: bash
+        run: |
+          compat=$(cat butteraugli/butteraugli-test/Project/butteraugli.4DProject | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          print(data['compatibilityVersion'])
+          ")
+          major=${compat:0:2}
+          minor_raw=${compat:2:2}
+          minor_dec=$((10#$minor_raw))
+          if [ $minor_dec -lt 10 ]; then
+            version="${major}.${minor_dec}"
+          else
+            r_version=$((minor_dec / 10))
+            version="${major} R${r_version}"
+          fi
+          branch="${major}.x"
+          echo "branch=${branch}" >> $GITHUB_OUTPUT
+          echo "version=${version}" >> $GITHUB_OUTPUT
+
+      - name: Download tool4d
+        shell: bash
+        run: |
+          url="https://resources-download.4d.com/release/${{ steps.version.outputs.branch }}/${{ steps.version.outputs.version }}/latest/${{ matrix.platform }}/${{ matrix.tool4d_archive }}"
+          curl "${url}" -o tool4d.tar.xz -sL
+          tar xJf tool4d.tar.xz
+
+      - name: Build plugin (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cd butteraugli
+          mkdir -p cmake-build && cd cmake-build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build .
+
+      - name: Build plugin (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd butteraugli
+          mkdir cmake-build; cd cmake-build
+          cmake .. -A x64
+          cmake --build . --config Release
+
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          tool4d.app/Contents/MacOS/tool4d \
+            --dataless \
+            --startup-method=test_all \
+            --project=$(pwd)/butteraugli/butteraugli-test/Project/butteraugli.4DProject
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >
+          ./tool4d/tool4d.exe --dataless --startup-method=test_all
+          --project="$((Get-Location).Path)\butteraugli\butteraugli-test\Project\butteraugli.4DProject"

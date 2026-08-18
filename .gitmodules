@@ -1,0 +1,6 @@
+[submodule "deps/4D-Plugin-SDK"]
+	path = deps/4D-Plugin-SDK
+	url = https://github.com/4d/4D-Plugin-SDK.git
+[submodule "deps/butteraugli"]
+	path = deps/butteraugli
+	url = https://github.com/google/butteraugli.git

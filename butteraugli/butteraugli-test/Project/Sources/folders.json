@@ -1,0 +1,9 @@
+{
+    "Tests": {
+        "methods": [
+            "test_all",
+            "test_butteraugli"
+        ]
+    },
+    "trash": {}
+}

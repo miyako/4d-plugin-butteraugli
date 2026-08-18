@@ -1,0 +1,12 @@
+{
+    "name": "butteraugli",
+    "id": 20000,
+    "commands": [
+        {
+            "theme": "butteraugli",
+            "syntax": "butteraugli(&P;&P):P",
+            "threadSafe": true,
+            "params": ["&P", "&P", "&P"]
+        }
+    ]
+}
