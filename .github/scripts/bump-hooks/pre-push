@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+
+def git(*args):
+    return subprocess.check_output(["git", *args], text=True).strip()
+
+try:
+    rows = [line.split() for line in sys.stdin if line.strip()]
+    if len(rows) != 1 or len(rows[0]) != 4:
+        raise ValueError("exactly one update required")
+    local_ref, new, remote_ref, old = rows[0]
+    if local_ref != "HEAD" or remote_ref != os.environ["BUMP_REF"]:
+        raise ValueError("literal HEAD and exact selected branch required")
+    if old != os.environ["BUMP_BASE"] or new != git("rev-parse", "HEAD") or new == old:
+        raise ValueError("advertised branch moved, disappeared, or update is empty")
+    if git("rev-list", "--parents", "-n", "1", new).split() != [new, old]:
+        raise ValueError("new commit must have exactly the selected SHA as parent")
+except (KeyError, ValueError, subprocess.CalledProcessError) as error:
+    print(f"pre-push: {error}", file=sys.stderr)
+    sys.exit(1)
