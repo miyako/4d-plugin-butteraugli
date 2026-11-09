@@ -1,14 +1,7 @@
-name: Build & Release
+name: Build
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing tag to build (e.g. v2.3.0)
-        required: true
 
 permissions:
   contents: write
@@ -16,9 +9,10 @@ permissions:
 env:
   PRODUCT_NAME: butteraugli
   MACOS_DEPLOYMENT_TARGET: '10.15'
+  PYTHONDONTWRITEBYTECODE: '1'
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: butteraugli-publication
   cancel-in-progress: false
 
 jobs:
@@ -29,11 +23,19 @@ jobs:
       tag: ${{ steps.set.outputs.tag }}
       version: ${{ steps.set.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
       - id: set
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          python3 .github/scripts/release.py preflight
+          VERSION=$(python3 .github/scripts/source_version.py read)
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
   build-windows:
     name: Build Windows (x64)
@@ -42,17 +44,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.tag }}
+          ref: ${{ github.sha }}
           submodules: recursive
           fetch-depth: 0
 
       - name: build with CMake
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $out = 'butteraugli/butteraugli-test/Plugins/butteraugli/Contents'
+          foreach ($file in @('Windows64/butteraugli.4DX', 'Resources/manifest.json', 'Resources/constants.xlf')) {
+            $path = Join-Path $out $file
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -ErrorAction Stop }
+          }
           cd ${{ env.PRODUCT_NAME }}
           mkdir cmake-build; cd cmake-build
           cmake .. -A x64
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
           cmake --build . --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'CMake build failed' }
+          $binary = '../butteraugli-test/Plugins/butteraugli/Contents/Windows64/butteraugli.4DX'
+          if (!(Test-Path -LiteralPath $binary -PathType Leaf) -or (Get-Item -LiteralPath $binary).Length -eq 0) {
+            throw 'Windows output is missing or empty'
+          }
 
       - name: upload windows binaries
         uses: actions/upload-artifact@v4
@@ -69,9 +83,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.tag }}
+          ref: ${{ github.sha }}
           submodules: recursive
           fetch-depth: 0
+
+      - name: Initial clean preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/release.py preflight
 
       - name: download windows binaries
         uses: actions/download-artifact@v4
@@ -106,6 +125,7 @@ jobs:
           TEAM_ID: ${{ secrets.NOTARYTOOL_TEAM_ID }}
           APP_PASSWORD: ${{ secrets.NOTARYTOOL_PASSWORD }}
         run: |
+          set -euo pipefail
           xcrun notarytool store-credentials "notarytool-profile" \
             --apple-id "$APPLE_ID" \
             --team-id "$TEAM_ID" \
@@ -114,9 +134,11 @@ jobs:
 
       - name: build macOS plugin (universal)
         run: |
+          set -euo pipefail
+          python3 .github/scripts/native.py clean
           cd ${{ env.PRODUCT_NAME }}
           mkdir -p cmake-build && cd cmake-build
-          cmake .. -DCMAKE_BUILD_TYPE=Release \
+          cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="${{ env.MACOS_DEPLOYMENT_TARGET }}"
           cmake --build .
@@ -124,9 +146,7 @@ jobs:
       - name: verify universal binary
         run: |
           set -euo pipefail
-          BIN="${{ env.PRODUCT_NAME }}/${{ env.PRODUCT_NAME }}-test/Plugins/${{ env.PRODUCT_NAME }}.bundle/Contents/MacOS/${{ env.PRODUCT_NAME }}"
-          lipo -info "$BIN"
-          lipo -info "$BIN" | grep -q "arm64" && lipo -info "$BIN" | grep -q "x86_64"
+          python3 .github/scripts/native.py verify
 
       - name: merge Windows binaries into the bundle
         run: |
@@ -144,6 +164,7 @@ jobs:
           echo "Signing with: $IDENTITY"
           codesign --verbose --deep --timestamp --force --options=runtime \
             --sign "$IDENTITY" "$BUNDLE_PATH"
+          codesign --verify --deep --strict --verbose=2 "$BUNDLE_PATH"
 
       - name: package, notarize & staple
         run: |
@@ -155,18 +176,16 @@ jobs:
           ditto -c -k --keepParent "$BUNDLE_PATH" "$ZIP_PATH"
           hdiutil create -format UDBZ -volname "${{ env.PRODUCT_NAME }}" -srcfolder "$BUNDLE_PATH" "$DMG_PATH"
 
-          xcrun notarytool submit "$ZIP_PATH" --keychain-profile "notarytool-profile" --keychain "$KEYCHAIN_PATH" --wait
-          xcrun notarytool submit "$DMG_PATH" --keychain-profile "notarytool-profile" --keychain "$KEYCHAIN_PATH" --wait
+          xcrun notarytool submit "$ZIP_PATH" --keychain-profile "notarytool-profile" --keychain "$KEYCHAIN_PATH" --wait --output-format json > "$RUNNER_TEMP/zip-notary.json"
+          python3 .github/scripts/native.py accepted "$RUNNER_TEMP/zip-notary.json"
+          xcrun notarytool submit "$DMG_PATH" --keychain-profile "notarytool-profile" --keychain "$KEYCHAIN_PATH" --wait --output-format json > "$RUNNER_TEMP/dmg-notary.json"
+          python3 .github/scripts/native.py accepted "$RUNNER_TEMP/dmg-notary.json"
           xcrun stapler staple "$DMG_PATH"
 
           echo "ZIP_PATH=$ZIP_PATH" >> "$GITHUB_ENV"
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
 
       - name: create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.version.outputs.tag }}
-          name: ${{ needs.version.outputs.tag }}
-          files: |
-            ${{ env.ZIP_PATH }}
-            ${{ env.DMG_PATH }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/release.py publish
